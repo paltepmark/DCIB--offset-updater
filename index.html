@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Il2Cpp RVA Updater Web Tool</title>
+    <style>
+        :root {
+            --bg-color: #0d1117;
+            --panel-bg: #161b22;
+            --text-color: #c9d1d9;
+            --accent-color: #238636;
+            --accent-hover: #2ea043;
+            --border-color: #30363d;
+            --code-bg: #010409;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 800px;
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-top: 0;
+            color: #ffffff;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 15px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            background: var(--code-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-color);
+            box-sizing: border-box;
+            cursor: pointer;
+        }
+
+        button {
+            background-color: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 6px;
+            cursor: pointer;
+            width: 100%;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background-color: var(--accent-hover);
+        }
+
+        #log-container {
+            margin-top: 25px;
+            background: var(--code-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 15px;
+            max-height: 250px;
+            overflow-y: auto;
+            font-family: Consolas, Monaco, monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+        }
+
+        .success { color: #3fb950; }
+        .warning { color: #d29922; }
+        .error { color: #f85149; }
+
+        #download-section {
+            margin-top: 20px;
+            display: none;
+            text-align: center;
+        }
+
+        .download-btn {
+            background-color: #1f6feb;
+            text-decoration: none;
+            display: inline-block;
+            padding: 12px 20px;
+            border-radius: 6px;
+            color: white;
+            font-weight: bold;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .download-btn:hover {
+            background-color: #388bfd;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Il2Cpp RVA Updater (Web Version)</h1>
+    
+    <div class="form-group">
+        <label for="oldMain">Old main.cpp:</label>
+        <input type="file" id="oldMain" accept=".cpp,.h,.txt">
+    </div>
+
+    <div class="form-group">
+        <label for="oldDump">Old dump.cs:</label>
+        <input type="file" id="oldDump" accept=".cs,.txt">
+    </div>
+
+    <div class="form-group">
+        <label for="newDump">New dump.cs:</label>
+        <input type="file" id="newDump" accept=".cs,.txt">
+    </div>
+
+    <button onclick="processFiles()">Update Offsets</button>
+
+    <div id="download-section">
+        <a id="downloadLink" class="download-btn">Download updated_main.cpp</a>
+    </div>
+
+    <div id="log-container">Ready. Please upload the required files above.</div>
+</div>
+
+<script>
+    function logMessage(msg, type = "") {
+        const logContainer = document.getElementById("log-container");
+        let spanClass = "";
+        if (type === "success") spanClass = "success";
+        else if (type === "warning") spanClass = "warning";
+        else if (type === "error") spanClass = "error";
+
+        logContainer.innerHTML += `<span class="${spanClass}">${msg}</span>\n`;
+        logContainer.scrollTop = logContainer.scrollHeight;
+    }
+
+    function parseDumpText(content) {
+        const rvaToName = {};
+        const nameToRva = {};
+        const lines = content.split(/\r?\n/);
+        let currentRva = null;
+        const rvaPattern = /RVA:\s*(0x[0-9A-Fa-f]+)/i;
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const rvaMatch = rvaPattern.exec(line);
+            if (rvaMatch) {
+                currentRva = "0x" + parseInt(rvaMatch[1], 16).toString(16); // normalized hex format
+                
+                for (let j = 1; j <= 5; j++) {
+                    if (i + j < lines.length) {
+                        const nextLine = lines[i + j].trim();
+                        if (!nextLine || nextLine.startsWith("//")) continue;
+
+                        const sigMatch = /(?:[\w\<\>\[\]]+\s+)+([A-Za-z0-9_]+)\s*\(/i.exec(nextLine);
+                        if (sigMatch) {
+                            const funcName = sigMatch[1];
+                            const ignoredKeywords = [
+                                "public", "private", "protected", "internal", "virtual", 
+                                "static", "sealed", "override", "async", "void", "int", 
+                                "bool", "float", "double", "string"
+                            ];
+                            if (!ignoredKeywords.includes(funcName)) {
+                                rvaToName[currentRva] = funcName;
+                                nameToRva[funcName] = currentRva;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        return { rvaToName, nameToRva };
+    }
+
+    async function processFiles() {
+        const oldMainFile = document.getElementById("oldMain").files[0];
+        const oldDumpFile = document.getElementById("oldDump").files[0];
+        const newDumpFile = document.getElementById("newDump").files[0];
+        
+        const logContainer = document.getElementById("log-container");
+        logContainer.innerHTML = "";
+        document.getElementById("download-section").style.display = "none";
+
+        if (!oldMainFile || !oldDumpFile || !newDumpFile) {
+            logMessage("Error: Please upload all three files (main.cpp, old.cs, new.cs).", "error");
+            return;
+        }
+
+        try {
+            logMessage("Reading and parsing files...");
+
+            const oldMainText = await oldMainFile.text();
+            const oldDumpText = await oldDumpFile.text();
+            const newDumpText = await newDumpFile.text();
+
+            const oldParsed = parseDumpText(oldDumpText);
+            const newParsed = parseDumpText(newDumpText);
+
+            if (Object.keys(oldParsed.rvaToName).length === 0) {
+                logMessage("Warning: No RVA mappings found in the old dump.", "warning");
+            }
+            if (Object.keys(newParsed.nameToRva).length === 0) {
+                logMessage("Warning: No RVA mappings found in the new dump.", "warning");
+            }
+
+            let updatedCount = 0;
+            const hexPattern = /(0x[0-9A-Fa-f]+)/gi;
+
+            const updatedContent = oldMainText.replace(hexPattern, (match) => {
+                const oldValNormalized = "0x" + parseInt(match, 16).toString(16);
+                const funcName = oldParsed.rvaToName[oldValNormalized];
+
+                if (funcName) {
+                    const newVal = newParsed.nameToRva[funcName];
+                    if (newVal && newVal.toLowerCase() !== oldValNormalized.toLowerCase()) {
+                        logMessage(`Updated [${funcName}]: ${match} => ${newVal}`);
+                        updatedCount++;
+                        return newVal;
+                    }
+                }
+                return match;
+            });
+
+            logMessage(`\nSuccess! Successfully updated ${updatedCount} offsets.`, "success");
+
+            // Prepare download link
+            const blob = new Blob([updatedContent], { type: "text/plain;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            const downloadLink = document.getElementById("downloadLink");
+            downloadLink.href = url;
+            downloadLink.download = "updated_main.cpp";
+            
+            document.getElementById("download-section").style.display = "block";
+
+        } catch (err) {
+            logMessage("Critical Error: " + err.message, "error");
+            console.error(err);
+        }
+    }
+</script>
+
+</body>
+</html>
